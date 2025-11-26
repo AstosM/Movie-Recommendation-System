@@ -1,5 +1,5 @@
 # app.py
-# Streamlit Movie Recommendation System with Posters & Homepage Links
+# STREAMLIT MOVIE RECOMMENDER — NO FALLBACK IMAGES
 
 import difflib
 import numpy as np
@@ -9,21 +9,19 @@ import streamlit as st
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-# ------------------------ CONFIG & STYLE ------------------------ #
+
+# ------------------------------------------------------------
+# PAGE CONFIG + CSS
+# ------------------------------------------------------------
 st.set_page_config(
     page_title="Movie Recommendation System",
     page_icon="🎬",
     layout="wide"
 )
 
-# Custom CSS for nicer UI
 st.markdown(
     """
     <style>
-    .main {
-        background: radial-gradient(circle at top, #1f2933 0, #020617 60%);
-        color: #e5e7eb;
-    }
     .rec-card {
         padding: 1rem;
         border-radius: 1rem;
@@ -76,39 +74,24 @@ st.markdown(
         font-size: 0.8rem;
         color: #93c5fd !important;
     }
-    .homepage-link a:hover {
-        text-decoration: underline;
-    }
     </style>
     """,
     unsafe_allow_html=True
 )
 
-# ------------------------ DATA & MODEL ------------------------ #
-@st.cache_data(show_spinner="Loading movie data…")
-def load_data(csv_path: str = "movies recommendation dataset.csv") -> pd.DataFrame:
-    """
-    Load the movies dataset.
 
-    Expects at least these columns:
-    - title
-    - genres
-    - keywords
-    - tagline
-    - cast
-    - director
-    Optionally:
-    - homepage  (movie website link)
-    - poster_url (direct image URL)
-    - poster_path (TMDB poster path)
-    """
+# ------------------------------------------------------------
+# LOAD DATA
+# ------------------------------------------------------------
+@st.cache_data(show_spinner="Loading movie dataset…")
+def load_data(csv_path="movies recommendation dataset.csv"):
     df = pd.read_csv(csv_path)
 
-    selected_features = ["genres", "keywords", "tagline", "cast", "director"]
-    for feature in selected_features:
-        if feature not in df.columns:
-            df[feature] = ""
-        df[feature] = df[feature].fillna("")
+    needed = ["genres", "keywords", "tagline", "cast", "director"]
+    for f in needed:
+        if f not in df.columns:
+            df[f] = ""
+        df[f] = df[f].fillna("")
 
     df["combined_features"] = (
         df["genres"] + " " +
@@ -121,255 +104,241 @@ def load_data(csv_path: str = "movies recommendation dataset.csv") -> pd.DataFra
     return df
 
 
+# ------------------------------------------------------------
+# BUILD MODEL
+# ------------------------------------------------------------
 @st.cache_resource(show_spinner="Building recommendation model…")
-def build_model(df: pd.DataFrame):
-    """
-    Fit TF-IDF vectorizer and compute cosine similarity matrix.
-    """
+def build_model(df):
     vectorizer = TfidfVectorizer(stop_words="english")
-    feature_vectors = vectorizer.fit_transform(df["combined_features"])
-    similarity = cosine_similarity(feature_vectors)
+    vectors = vectorizer.fit_transform(df["combined_features"])
+    similarity = cosine_similarity(vectors)
     return vectorizer, similarity
 
 
-def get_poster_url(row: pd.Series) -> str:
+# ------------------------------------------------------------
+# POSTER HANDLING — NO FALLBACK IMAGE
+# ------------------------------------------------------------
+def get_poster_url(row):
     """
-    Get a poster URL for a movie using your dataset columns.
-
-    Priority:
-    1. 'homepage' if it looks like a direct image link
-    2. 'poster_url' if it is a full URL
-    3. 'poster_path' combined with TMDB base URL
-    4. Fallback placeholder image
+    Returns ONLY a dataset poster URL.
+    No fallback images.
+    Returns None if no valid poster exists.
     """
-    def is_image_url(url: str) -> bool:
-        url_lower = url.lower()
-        return url_lower.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif"))
 
-    # 1. Homepage as direct image (if so)
+    def is_image(url: str) -> bool:
+        url = url.lower()
+        return url.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif"))
+
+    # 1) homepage if it's a direct image
     homepage = row.get("homepage", "")
     if isinstance(homepage, str):
         homepage = homepage.strip()
-        if homepage.startswith(("http://", "https://")) and is_image_url(homepage):
+        if homepage.startswith(("http://", "https://")) and is_image(homepage):
             return homepage
 
-    # 2. Explicit poster_url
+    # 2) poster_url
     poster_url = row.get("poster_url", "")
     if isinstance(poster_url, str):
         poster_url = poster_url.strip()
-        if poster_url.startswith(("http://", "https://")):
+        if poster_url.startswith(("http://", "https://")) and is_image(poster_url):
             return poster_url
 
-    # 3. TMDB-style poster_path
+    # 3) TMDB poster_path
     poster_path = row.get("poster_path", "")
     if isinstance(poster_path, str) and poster_path.strip():
-        path = poster_path.strip()
-        if not path.startswith("/"):
-            path = "/" + path
-        # TMDB base (can be adjusted)
-        return f"https://image.tmdb.org/t/p/w500{path}"
+        poster_path = poster_path.strip()
+        if is_image(poster_path):
+            if not poster_path.startswith("/"):
+                poster_path = "/" + poster_path
+            return f"https://image.tmdb.org/t/p/w500{poster_path}"
 
-    # 4. Fallback
-    return "https://static.streamlit.io/examples/cat.jpg"
+    # 4) No image in dataset
+    return None
 
 
-def recommend_movies(
-    df: pd.DataFrame,
-    similarity: np.ndarray,
-    movie_name: str,
-    num_recs: int = 10
-):
-    """
-    Use difflib to match the movie name, then return top N recommendations.
-    """
+# ------------------------------------------------------------
+# RECOMMENDATION LOGIC
+# ------------------------------------------------------------
+def recommend(df, similarity, movie_name, num_recs=10):
     if not movie_name:
         return None, []
 
-    all_titles = df["title"].astype(str).tolist()
-    close_matches = difflib.get_close_matches(movie_name, all_titles, n=1, cutoff=0.4)
+    titles = df["title"].astype(str).tolist()
+    match = difflib.get_close_matches(movie_name, titles, n=1, cutoff=0.4)
 
-    if not close_matches:
+    if not match:
         return None, []
 
-    close_match = close_matches[0]
+    best = match[0]
 
-    # Use 'index' column if provided, otherwise DataFrame index
     if "index" in df.columns:
-        idx = df[df.title == close_match]["index"].values[0]
+        idx = df[df.title == best]["index"].values[0]
     else:
-        idx = df[df.title == close_match].index[0]
+        idx = df[df.title == best].index[0]
 
-    sim_scores = list(enumerate(similarity[idx]))
-    sorted_sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
+    sims = sorted(
+        list(enumerate(similarity[idx])),
+        key=lambda x: x[1],
+        reverse=True
+    )
 
-    recommendations = []
-    for i, (movie_idx, score) in enumerate(sorted_sim_scores):
+    recs = []
+    for i, (movie_idx, score) in enumerate(sims):
         if i == 0:
-            continue  # skip the same movie
-        if len(recommendations) >= num_recs:
+            continue
+        if len(recs) >= num_recs:
             break
 
         row = df.iloc[movie_idx]
-        recommendations.append({
+        recs.append({
             "title": row.get("title", "Unknown"),
             "genres": row.get("genres", ""),
             "tagline": row.get("tagline", ""),
             "score": float(score),
-            "poster_url": get_poster_url(row),
-            "row": row,
+            "poster": get_poster_url(row),
+            "row": row
         })
 
-    return close_match, recommendations
+    return best, recs
 
 
-# ------------------------ UI LAYOUT ------------------------ #
+# ------------------------------------------------------------
+# UI — HEADER
+# ------------------------------------------------------------
 st.markdown("## 🎬 Movie Recommendation System")
-st.markdown(
-    """
-    Discover movies similar to your favourites using content-based filtering  
-    based on **genres, keywords, tagline, cast & director**.
-    """
-)
+st.markdown("Find movies similar to your favorites — with posters from your dataset only.")
 
+# SIDEBAR
 with st.sidebar:
-    st.header("⚙️ Controls")
+    st.header("Settings")
+    csv_path = st.text_input("CSV file:", "movies recommendation dataset.csv")
+    num_recs = st.slider("Recommendations", 5, 30, 12)
+    show_raw = st.checkbox("Show dataset preview")
 
-    csv_path = st.text_input(
-        "CSV file path",
-        value="movies recommendation dataset.csv",
-        help="Path to your movie dataset CSV"
-    )
-
-    num_recs = st.slider(
-        "Number of recommendations",
-        min_value=5,
-        max_value=30,
-        value=12,
-        step=1
-    )
-
-    show_raw = st.checkbox("Show raw data preview", value=False)
-
-    st.markdown("---")
-    st.caption(
-        "Your dataset can include a **homepage** column with movie links, "
-        "and optionally **poster_url/poster_path** for better posters."
-    )
-
-# Load data & model
+# LOAD DATA + MODEL
 try:
-    movies_df = load_data(csv_path)
-    vectorizer, similarity_matrix = build_model(movies_df)
+    df = load_data(csv_path)
+    vectorizer, similarity = build_model(df)
 except Exception as e:
-    st.error(f"Error loading data or building model:\n\n{e}")
+    st.error(f"Error loading data or model: {e}")
     st.stop()
 
 if show_raw:
-    st.subheader("📄 Data Preview")
-    st.dataframe(movies_df.head(50), use_container_width=True)
+    st.subheader("Dataset Preview")
+    st.dataframe(df.head(50), use_container_width=True)
 
-# Search area
+# SEARCH SECTION
 st.markdown("---")
-col_left, col_right = st.columns([2, 1])
+col1, col2 = st.columns([2, 1])
 
-with col_left:
-    user_movie_name = st.text_input(
-        "Enter your favourite movie",
-        placeholder="e.g. Avatar, The Dark Knight, Inception...",
-    )
+with col1:
+    movie_name = st.text_input("Enter a movie:")
 
-with col_right:
-    all_titles_sorted = sorted(movies_df["title"].astype(str).unique())
-    selected_title = st.selectbox(
-        "…or pick from the list",
-        options=["(None)"] + all_titles_sorted
-    )
-    if selected_title != "(None)":
-        user_movie_name = selected_title
+with col2:
+    all_titles = sorted(df["title"].astype(str).unique())
+    pick = st.selectbox("…or choose:", ["(None)"] + all_titles)
+    if pick != "(None)":
+        movie_name = pick
 
-search_btn = st.button(
-    "🔍 Get Recommendations",
-    type="primary",
-    use_container_width=True
-)
-
+btn = st.button("🔍 Recommend", type="primary", use_container_width=True)
 st.markdown("---")
 
-# ------------------------ RECOMMENDATION RESULTS ------------------------ #
-if search_btn:
-    original_title, recs = recommend_movies(
-        movies_df,
-        similarity_matrix,
-        user_movie_name,
-        num_recs=num_recs
-    )
 
-    if original_title is None:
-        st.warning("I couldn't find a close match for that movie. Please try another title.")
+# ------------------------------------------------------------
+# RESULTS
+# ------------------------------------------------------------
+if btn:
+    original, recs = recommend(df, similarity, movie_name, num_recs)
+
+    if not original:
+        st.warning("No match found. Try another title.")
     else:
-        st.subheader(f"Recommendations based on: **{original_title}**")
+        st.subheader(f"Recommendations based on **{original}**")
 
-        # Original movie details
-        original_row = movies_df[movies_df.title == original_title].iloc[0]
-        with st.expander("Show details of your chosen movie", expanded=True):
+        # ORIGINAL MOVIE SECTION
+        row = df[df.title == original].iloc[0]
+        poster = get_poster_url(row)
+
+        with st.expander("Selected movie details", expanded=True):
             c1, c2 = st.columns([1, 2])
+
             with c1:
-                st.image(get_poster_url(original_row), use_container_width=True)
-                homepage = original_row.get("homepage", "")
-                if isinstance(homepage, str) and homepage.strip().startswith(("http://", "https://")):
-                    st.markdown(
-                        f'<p class="homepage-link">'
-                        f'<a href="{homepage}" target="_blank">🔗 Open movie homepage</a>'
-                        f'</p>',
-                        unsafe_allow_html=True
-                    )
+                if poster:
+                    st.image(poster, use_container_width=True)
+                else:
+                    st.markdown("*(No poster available)*")
+
+                homepage = row.get("homepage", "")
+                if isinstance(homepage, str) and homepage.startswith(("http://", "https://")):
+                    st.markdown(f"[🔗 Homepage]({homepage})")
+
             with c2:
-                st.markdown(f"### {original_title}")
-                st.markdown(f"**Genres:** {original_row.get('genres', 'N/A')}")
-                tagline = original_row.get("tagline", "")
-                if isinstance(tagline, str) and tagline.strip():
-                    st.markdown(f"**Tagline:** _{tagline}_")
-                cast = original_row.get("cast", "")
+                st.markdown(f"### {original}")
+                st.markdown(f"**Genres:** {row.get('genres', 'N/A')}")
+                tg = row.get("tagline", "")
+                if isinstance(tg, str) and tg.strip():
+                    st.markdown(f"**Tagline:** _{tg}_")
+
+                cast = row.get("cast", "")
                 if isinstance(cast, str) and cast.strip():
-                    st.markdown(
-                        f"**Cast:** {cast[:400]}{'…' if len(cast) > 400 else ''}"
-                    )
-                director = original_row.get("director", "")
+                    st.markdown(f"**Cast:** {cast[:400]}{'…' if len(cast) > 400 else ''}")
+
+                director = row.get("director", "")
                 if isinstance(director, str) and director.strip():
                     st.markdown(f"**Director:** {director}")
 
+        # RECOMMENDATIONS GRID
         st.markdown("### 🎯 Top Recommendations")
 
         if not recs:
-            st.info("No similar movies found. Try a different title or check your dataset.")
+            st.info("No similar movies found.")
         else:
             cols_per_row = 3
             for i in range(0, len(recs), cols_per_row):
                 row_recs = recs[i:i + cols_per_row]
                 cols = st.columns(len(row_recs))
-                for c, rec in zip(cols, row_recs):
+
+                for c, r in zip(cols, row_recs):
                     with c:
                         st.markdown('<div class="rec-card">', unsafe_allow_html=True)
 
-                        # Poster
-                        st.image(rec["poster_url"], use_container_width=True)
+                        # Poster ONLY if exists
+                        if r["poster"]:
+                            st.image(r["poster"], use_container_width=True)
+                        else:
+                            st.markdown("*(No poster available)*")
 
-                        # Title
+                        st.markdown(f'<div class="rec-title">{r["title"]}</div>', unsafe_allow_html=True)
+
+                        # Genres
+                        genres = str(r["genres"]).split("|")
+                        chips = "".join(
+                            f'<span class="movie-chip">{g.strip()}</span>'
+                            for g in genres if g.strip()
+                        )
+                        st.markdown(f'<div class="rec-meta">{chips}</div>', unsafe_allow_html=True)
+
+                        # Similarity
                         st.markdown(
-                            f'<div class="rec-title">{rec["title"]}</div>',
+                            f'<div class="similarity-badge">Score: {r["score"]:.3f}</div>',
                             unsafe_allow_html=True
                         )
 
-                        # Genres as chips
-                        genres = str(rec["genres"]).split("|") if isinstance(rec["genres"], str) else []
-                        if genres and genres[0].strip():
-                            chips_html = "".join(
-                                f'<span class="movie-chip">{g.strip()}</span>'
-                                for g in genres if g.strip()
-                            )
+                        # Tagline
+                        tagline = r["tagline"]
+                        if isinstance(tagline, str) and tagline.strip():
                             st.markdown(
-                                f'<div class="rec-meta">{chips_html}</div>',
+                                f'<div class="rec-tagline">"{tagline[:140]}{"…" if len(tagline) > 140 else ""}"</div>',
                                 unsafe_allow_html=True
                             )
+                        else:
+                            st.markdown('<div class="rec-tagline">No tagline.</div>', unsafe_allow_html=True)
 
-                        # Similarity badge
+                        # Homepage (if exists)
+                        homepage = r["row"].get("homepage", "")
+                        if isinstance(homepage, str) and homepage.startswith(("http://", "https://")):
+                            st.markdown(f"[🔗 Homepage]({homepage})")
+
+                        st.markdown("</div>", unsafe_allow_html=True)
+else:
+    st.info("Enter or select a movie and click Recommend.")
